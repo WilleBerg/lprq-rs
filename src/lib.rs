@@ -1,4 +1,4 @@
-use haphazard::{AtomicPtr as HpAtomicPtr, HazardPointer, HazardPointerArray};
+use haphazard::{AtomicPtr as HpAtomicPtr, HazardPointerArray};
 use std::sync::atomic::Ordering::SeqCst;
 use std::{
     ptr::null_mut,
@@ -20,8 +20,8 @@ pub struct LPRQueue<E, const N: usize = 256> {
     // WARN: Unsure about the lifetime here.
     hps: UnsafeCell<HazardPointerArray<'static, haphazard::Global, N>>,
 }
-unsafe impl<E> Sync for LPRQueue<E>{}
-unsafe impl<E> Send for LPRQueue<E>{}
+unsafe impl<E, const N: usize> Sync for LPRQueue<E, N>{}
+unsafe impl<E, const N: usize> Send for LPRQueue<E, N>{}
 
 fn is_bottom<T>(value: *const T) -> bool {
     (value as usize & 1) != 0
