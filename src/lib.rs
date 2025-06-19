@@ -31,7 +31,7 @@ fn thread_local_bottom<T>(tid: usize) -> *mut T {
     ((tid << 1) | 1) as *mut T
 }
 
-impl<E> LPRQueue<E> {
+impl<E, const N: usize> LPRQueue<E, N> {
     pub fn new() -> Self {
         let start = Box::into_raw(Box::new(PRQ::new()));
         LPRQueue {
@@ -133,7 +133,7 @@ impl<E> LPRQueue<E> {
     }
 }
 
-impl<E> Default for LPRQueue<E> {
+impl<E, const N: usize> Default for LPRQueue<E, N> {
     fn default() -> Self {
         Self::new()
     }
@@ -372,6 +372,12 @@ mod tests {
     #[test]
     fn create_lprqueue() {
         let q: LPRQueue<i32> = LPRQueue::new();
+        q.enqueue(1);
+        assert_eq!(q.dequeue().unwrap(), 1);
+    }
+    #[test]
+    fn create_lprqueue2() {
+        let q: LPRQueue<i32, 128> = LPRQueue::new();
         q.enqueue(1);
         assert_eq!(q.dequeue().unwrap(), 1);
     }
