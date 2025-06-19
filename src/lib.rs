@@ -20,6 +20,7 @@ pub struct LPRQueue<'a, E, const N: usize = 256> {
     hps: UnsafeCell<HazardPointerArray<'a, haphazard::Global, N>>,
 }
 unsafe impl<E> Sync for LPRQueue<'_, E>{}
+unsafe impl<E> Send for LPRQueue<'_, E>{}
 
 fn is_bottom<T>(value: *const T) -> bool {
     (value as usize & 1) != 0
