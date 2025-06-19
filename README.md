@@ -1,6 +1,7 @@
 # lprq-rs
 lprq-rs is a Rust implementation of the [LPRQ](https://dl.acm.org/doi/abs/10.1145/3572848.3577485).
-It is a very fast concurrent lock-free queue, outperforming most, if not all, other Rust concurrent queues.
+It is a very fast concurrent lock-free queue, outperforming most, if not all, other popular Rust concurrent queues
+at higher thread counts.
 
 ## Usage
 ```rust
