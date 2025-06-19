@@ -19,8 +19,6 @@ pub struct LPRQueue<E> {
     head: CachePadded<HpAtomicPtr<PRQ<E>>>,
     tail: CachePadded<HpAtomicPtr<PRQ<E>>>,
     next_thread_id: AtomicUsize,
-    // // WARN: Unsure about the lifetime here.
-    // hps: UnsafeCell<HazardPointerArray<'static, haphazard::Global, N>>,
 }
 
 fn is_bottom<T>(value: *const T) -> bool {
