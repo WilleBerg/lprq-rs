@@ -1,0 +1,8 @@
+[package]
+name = "lprq"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+crossbeam-utils = "0.8.21"
+haphazard = "0.1.8"
