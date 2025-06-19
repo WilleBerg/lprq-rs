@@ -13,14 +13,15 @@ thread_local! {
     static THREAD_ID: std::cell::Cell<Option<usize>> = const {std::cell::Cell::new(None)};
 }
 
-pub struct LPRQueue<'a, E, const N: usize = 256> {
+pub struct LPRQueue<E, const N: usize = 256> {
     head: CachePadded<HpAtomicPtr<PRQ<E>>>,
     tail: CachePadded<HpAtomicPtr<PRQ<E>>>,
     next_thread_id: AtomicUsize,
-    hps: UnsafeCell<HazardPointerArray<'a, haphazard::Global, N>>,
+    // WARN: Unsure about the lifetime here.
+    hps: UnsafeCell<HazardPointerArray<'static, haphazard::Global, N>>,
 }
-unsafe impl<E> Sync for LPRQueue<'_, E>{}
-unsafe impl<E> Send for LPRQueue<'_, E>{}
+unsafe impl<E> Sync for LPRQueue<E>{}
+unsafe impl<E> Send for LPRQueue<E>{}
 
 fn is_bottom<T>(value: *const T) -> bool {
     (value as usize & 1) != 0
@@ -30,7 +31,7 @@ fn thread_local_bottom<T>(tid: usize) -> *mut T {
     ((tid << 1) | 1) as *mut T
 }
 
-impl<E> LPRQueue<'_, E> {
+impl<E> LPRQueue<E> {
     pub fn new() -> Self {
         let start = Box::into_raw(Box::new(PRQ::new()));
         LPRQueue {
@@ -132,7 +133,7 @@ impl<E> LPRQueue<'_, E> {
     }
 }
 
-impl<E> Default for LPRQueue<'_, E> {
+impl<E> Default for LPRQueue<E> {
     fn default() -> Self {
         Self::new()
     }
@@ -351,7 +352,7 @@ impl<E> PRQ<E> {
     }
 }
 
-impl<T, const N: usize> Drop for LPRQueue<'_, T, N> {
+impl<T, const N: usize> Drop for LPRQueue<T, N> {
     fn drop(&mut self) {
         let head = unsafe { Box::from_raw(self.head.load_ptr()) };
         let mut next = head.next;
