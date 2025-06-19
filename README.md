@@ -20,7 +20,7 @@ It performs a lot better than all other concurrent queues benchmarked after 6 th
 The poor performance for for τ = 0.3 is probably due to no optimisation for the empty queue, however
 that is planned to be implemented.
 
-![Benchmark results](todo)
+![Benchmark results](https://raw.githubusercontent.com/WilleBerg/lprq-rs/refs/heads/main/images/six_subplot_comparison.png)
 
 Here are results from three different benchmarks using varying tau (τ) values to control the enqueue/dequeue ratio. 
 
