@@ -1,27 +1,27 @@
-use haphazard::{AtomicPtr as HpAtomicPtr, HazardPointerArray};
+use crossbeam_utils::CachePadded;
+use haphazard::{AtomicPtr as HpAtomicPtr, HazardPointer};
 use std::sync::atomic::Ordering::SeqCst;
 use std::{
     ptr::null_mut,
     sync::atomic::{AtomicBool, AtomicPtr as RawAtomicPtr, AtomicU64, AtomicUsize, Ordering},
 };
-use std::cell::UnsafeCell;
-use crossbeam_utils::CachePadded;
 
 static RING_SIZE: u64 = 1024;
 
 thread_local! {
     static THREAD_ID: std::cell::Cell<Option<usize>> = const {std::cell::Cell::new(None)};
+    static HAZARD_POINTER: std::cell::RefCell<Option<HazardPointer<'static, haphazard::Global>>> =
+        const { std::cell::RefCell::new(None) };
+
 }
 
-pub struct LPRQueue<E, const N: usize = 256> {
+pub struct LPRQueue<E> {
     head: CachePadded<HpAtomicPtr<PRQ<E>>>,
     tail: CachePadded<HpAtomicPtr<PRQ<E>>>,
     next_thread_id: AtomicUsize,
-    // WARN: Unsure about the lifetime here.
-    hps: UnsafeCell<HazardPointerArray<'static, haphazard::Global, N>>,
+    // // WARN: Unsure about the lifetime here.
+    // hps: UnsafeCell<HazardPointerArray<'static, haphazard::Global, N>>,
 }
-unsafe impl<E, const N: usize> Sync for LPRQueue<E, N>{}
-unsafe impl<E, const N: usize> Send for LPRQueue<E, N>{}
 
 fn is_bottom<T>(value: *const T) -> bool {
     (value as usize & 1) != 0
@@ -31,93 +31,92 @@ fn thread_local_bottom<T>(tid: usize) -> *mut T {
     ((tid << 1) | 1) as *mut T
 }
 
-impl<E, const N: usize> LPRQueue<E, N> {
+impl<E> LPRQueue<E> {
     pub fn new() -> Self {
         let start = Box::into_raw(Box::new(PRQ::new()));
         LPRQueue {
             head: unsafe { CachePadded::new(HpAtomicPtr::new(start)) },
             tail: unsafe { CachePadded::new(HpAtomicPtr::new(start)) },
             next_thread_id: AtomicUsize::new(1),
-            hps: UnsafeCell::new(HazardPointerArray::default()),
         }
     }
     pub fn enqueue(&self, item: E) {
         // trace!("Starting LPRQ enqueue");
         let mut inner_item = Box::into_raw(Box::new(item));
         let thread_id = self.get_thread_id();
-        let hps = unsafe { &mut *self.hps.get() };
-        let hp = &mut hps.as_refs()[thread_id];
-        loop {
-            let prq = self.tail.safe_load(hp).unwrap();
-            // trace!("Enqueueing item now");
-            match prq.enqueue(inner_item, thread_id) {
-                Ok(()) => return,
-                Err(val) => inner_item = val,
-            }
-            // trace!("Enqueue failed. PRQ is full.");
-            let new_tail_ptr = Box::into_raw(Box::new(PRQ::new()));
-            let new_tail = unsafe { new_tail_ptr.as_ref().unwrap() };
-            // trace!("trying new enqueue, value of item is: {:?}", unsafe { inner_item.as_ref() });
-            let _ = new_tail.enqueue(inner_item, thread_id);
-            if unsafe {
-                prq.next
-                    .compare_exchange_ptr(null_mut(), new_tail_ptr)
-                    .is_ok()
-            } {
-                // trace!("switched next pointer to new tail");
-                unsafe {
-                    let _ = self
-                        .tail
-                        .compare_exchange_ptr(prq as *const _ as *mut _, new_tail_ptr);
+        with_hazard_pointer(|hp| {
+            loop {
+                let prq = self.tail.safe_load(hp).unwrap();
+                // trace!("Enqueueing item now");
+                match prq.enqueue(inner_item, thread_id) {
+                    Ok(()) => return,
+                    Err(val) => inner_item = val,
                 }
-                return;
-            } else {
-                unsafe {
-                    drop(Box::from_raw(new_tail_ptr));
+                // trace!("Enqueue failed. PRQ is full.");
+                let new_tail_ptr = Box::into_raw(Box::new(PRQ::new()));
+                let new_tail = unsafe { new_tail_ptr.as_ref().unwrap() };
+                // trace!("trying new enqueue, value of item is: {:?}", unsafe { inner_item.as_ref() });
+                let _ = new_tail.enqueue(inner_item, thread_id);
+                if unsafe {
+                    prq.next
+                        .compare_exchange_ptr(null_mut(), new_tail_ptr)
+                        .is_ok()
+                } {
+                    // trace!("switched next pointer to new tail");
+                    unsafe {
+                        let _ = self
+                            .tail
+                            .compare_exchange_ptr(prq as *const _ as *mut _, new_tail_ptr);
+                    }
+                    return;
+                } else {
+                    unsafe {
+                        drop(Box::from_raw(new_tail_ptr));
+                    }
+                    let _ = unsafe {
+                        self.tail
+                            .compare_exchange_ptr(prq as *const _ as *mut _, prq.next.load_ptr())
+                    };
                 }
-                let _ = unsafe {
-                    self.tail
-                        .compare_exchange_ptr(prq as *const _ as *mut _, prq.next.load_ptr())
-                };
             }
-        }
+        });
     }
     pub fn dequeue(&self) -> Option<E> {
         let thread_id = self.get_thread_id();
-        let hps = unsafe { &mut *self.hps.get() };
-        let hp = &mut hps.as_refs()[thread_id];
-        loop {
-            // trace!("Thread {thread_id}: starting lprqueue dequeue");
-            let prq = self.head.safe_load(hp).unwrap();
-            // trace!("Thread {thread_id}: Starting inner dequeue now");
-            let mut res = prq.dequeue(thread_id);
-            if res.is_some() {
-                // trace!("Thread {thread_id}: Dequeue was a success");
-                return res;
-            }
-            // trace!("Thread {thread_id}: Dequeue failed");
-            if prq.next.load_ptr().is_null() {
-                // self.trace_through();
-                // trace!("Thread: {thread_id}: Returning none");
-                return None;
-            }
-            res = prq.dequeue(thread_id);
-            if res.is_some() {
-                return res;
-            }
-            // trace!("Thread {thread_id}: prq is empty, update HEAD and restart");
-            if let Ok(curr) = unsafe {
-                self.head
-                    .compare_exchange_ptr(prq as *const _ as *mut _, prq.next.load_ptr())
-            } {
-                let old_ptr = curr.unwrap();
-                // self.crq_count.fetch_sub(1, Ordering::Relaxed);
-                unsafe {
-                    old_ptr.retire();
+        with_hazard_pointer(|hp| {
+            loop {
+                // trace!("Thread {thread_id}: starting lprqueue dequeue");
+                let prq = self.head.safe_load(hp).unwrap();
+                // trace!("Thread {thread_id}: Starting inner dequeue now");
+                let mut res = prq.dequeue(thread_id);
+                if res.is_some() {
+                    // trace!("Thread {thread_id}: Dequeue was a success");
+                    return res;
                 }
+                // trace!("Thread {thread_id}: Dequeue failed");
+                if prq.next.load_ptr().is_null() {
+                    // self.trace_through();
+                    // trace!("Thread: {thread_id}: Returning none");
+                    return None;
+                }
+                res = prq.dequeue(thread_id);
+                if res.is_some() {
+                    return res;
+                }
+                // trace!("Thread {thread_id}: prq is empty, update HEAD and restart");
+                if let Ok(curr) = unsafe {
+                    self.head
+                        .compare_exchange_ptr(prq as *const _ as *mut _, prq.next.load_ptr())
+                } {
+                    let old_ptr = curr.unwrap();
+                    // self.crq_count.fetch_sub(1, Ordering::Relaxed);
+                    unsafe {
+                        old_ptr.retire();
+                    }
+                }
+                hp.reset_protection();
             }
-            hp.reset_protection();
-        }
+        })
     }
     fn get_thread_id(&self) -> usize {
         THREAD_ID.with(|id| {
@@ -132,8 +131,20 @@ impl<E, const N: usize> LPRQueue<E, N> {
         })
     }
 }
+fn with_hazard_pointer<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut HazardPointer<'static, haphazard::Global>) -> R,
+{
+    HAZARD_POINTER.with(|hp_cell| {
+        let mut hp_ref = hp_cell.borrow_mut();
+        if hp_ref.is_none() {
+            *hp_ref = Some(HazardPointer::new());
+        }
+        f(hp_ref.as_mut().unwrap())
+    })
+}
 
-impl<E, const N: usize> Default for LPRQueue<E, N> {
+impl<E> Default for LPRQueue<E> {
     fn default() -> Self {
         Self::new()
     }
@@ -352,7 +363,7 @@ impl<E> PRQ<E> {
     }
 }
 
-impl<T, const N: usize> Drop for LPRQueue<T, N> {
+impl<T> Drop for LPRQueue<T> {
     fn drop(&mut self) {
         let head = unsafe { Box::from_raw(self.head.load_ptr()) };
         let mut next = head.next;
@@ -372,12 +383,6 @@ mod tests {
     #[test]
     fn create_lprqueue() {
         let q: LPRQueue<i32> = LPRQueue::new();
-        q.enqueue(1);
-        assert_eq!(q.dequeue().unwrap(), 1);
-    }
-    #[test]
-    fn create_lprqueue2() {
-        let q: LPRQueue<i32, 128> = LPRQueue::new();
         q.enqueue(1);
         assert_eq!(q.dequeue().unwrap(), 1);
     }
